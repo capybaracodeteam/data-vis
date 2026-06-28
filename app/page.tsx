@@ -1,4 +1,4 @@
-import { XMLParser } from "fast-xml-parser";
+import { getSupabase, type TradeRow } from "@/app/lib/supabase";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -16,60 +16,7 @@ interface Trade {
   totalValue: number;
 }
 
-interface EdgarFiling {
-  adsh: string;
-  file_date: string;
-  [key: string]: unknown;
-}
-
-interface EdgarResponse {
-  hits: {
-    total: { value: number; relation: string };
-    hits: { _source: EdgarFiling }[];
-  };
-}
-
-interface Form4Owner {
-  reportingOwnerId?: { rptOwnerName?: string };
-  reportingOwnerRelationship?: {
-    isDirector?: number | string;
-    isOfficer?: number | string;
-    isTenPercentOwner?: number | string;
-    officerTitle?: unknown;
-  };
-}
-
-interface Form4Transaction {
-  transactionDate?: { value?: string };
-  transactionAmounts?: {
-    transactionShares?: { value?: number };
-    transactionPricePerShare?: { value?: number };
-    transactionAcquiredDisposedCode?: { value?: string };
-  };
-}
-
-interface Form4Doc {
-  issuer?: { issuerName?: string; issuerTradingSymbol?: string };
-  reportingOwner?: Form4Owner[];
-  nonDerivativeTable?: { nonDerivativeTransaction?: Form4Transaction[] };
-}
-
-// ── Constants ─────────────────────────────────────────────────────────────────
-
-const EDGAR_HEADERS = {
-  "User-Agent": "insider-trading-viz/1.0 capybaracodeteam@gmail.com",
-  "Accept-Encoding": "gzip, deflate",
-};
-
 // ── Helpers ───────────────────────────────────────────────────────────────────
-
-function cikFromAdsh(adsh: string): string {
-  return String(parseInt(adsh.split("-")[0], 10) || 0);
-}
-
-function padCik(cik: string): string {
-  return cik.padStart(10, "0");
-}
 
 function formatMoney(n: number): string {
   if (n >= 1_000_000) return `$${(n / 1_000_000).toFixed(1)}M`;
@@ -77,134 +24,44 @@ function formatMoney(n: number): string {
   return `$${n.toFixed(0)}`;
 }
 
-// ── Data pipeline ─────────────────────────────────────────────────────────────
-
-async function fetchRecentFilings(): Promise<EdgarFiling[]> {
-  const res = await fetch(
-    "https://efts.sec.gov/LATEST/search-index?forms=4&dateRange=custom&startdt=2025-01-01&from=0&size=20",
-    { headers: EDGAR_HEADERS, next: { revalidate: 86400 } }
-  );
-  if (!res.ok) throw new Error(`EDGAR search failed: ${res.status}`);
-  const data: EdgarResponse = await res.json();
-  if (!data.hits || typeof data.hits.total?.value !== "number" || !Array.isArray(data.hits.hits)) {
-    throw new Error("Unexpected EDGAR API response shape");
-  }
-  return data.hits.hits.map((h) => h._source).slice(0, 10);
+function rowToTrade(r: TradeRow): Trade {
+  return {
+    id: r.id,
+    filedDate: r.filed_date,
+    tradeDate: r.trade_date,
+    company: r.company,
+    ticker: r.ticker ?? "",
+    insiderName: r.insider_name,
+    role: r.role ?? "Insider",
+    type: r.type,
+    shares: r.shares,
+    pricePerShare: r.price_per_share ?? 0,
+    totalValue: r.total_value ?? 0,
+  };
 }
 
-async function getPrimaryDoc(cik: string, adsh: string): Promise<string | null> {
-  try {
-    const res = await fetch(
-      `https://data.sec.gov/submissions/CIK${padCik(cik)}.json`,
-      { headers: EDGAR_HEADERS, next: { revalidate: 86400 } }
-    );
-    if (!res.ok) return null;
-    const data = await res.json();
-    const accessions: string[] = data?.filings?.recent?.accessionNumber ?? [];
-    const docs: string[] = data?.filings?.recent?.primaryDocument ?? [];
-    const idx = accessions.indexOf(adsh);
-    return idx === -1 ? null : (docs[idx] ?? null);
-  } catch {
-    return null;
-  }
-}
+// ── Data ──────────────────────────────────────────────────────────────────────
 
-async function parseForm4(
-  cik: string,
-  adsh: string,
-  primaryDoc: string,
-  filedDate: string
-): Promise<Trade[]> {
-  try {
-    const filename = primaryDoc.includes("/") ? primaryDoc.split("/").pop()! : primaryDoc;
-    const url = `https://www.sec.gov/Archives/edgar/data/${cik}/${adsh.replace(/-/g, "")}/${filename}`;
-    const res = await fetch(url, { headers: EDGAR_HEADERS, next: { revalidate: 86400 } });
-    if (!res.ok) return [];
-
-    const xml = await res.text();
-    const parser = new XMLParser({
-      ignoreAttributes: true,
-      isArray: (name) => name === "nonDerivativeTransaction" || name === "reportingOwner",
-    });
-    const doc: Form4Doc =
-      (parser.parse(xml) as { ownershipDocument?: Form4Doc })?.ownershipDocument ?? {};
-
-    const company = doc.issuer?.issuerName ?? "Unknown";
-    const ticker = doc.issuer?.issuerTradingSymbol ?? "";
-    const owner = doc.reportingOwner?.[0];
-    const insiderName = owner?.reportingOwnerId?.rptOwnerName ?? "Unknown";
-    const rel = owner?.reportingOwnerRelationship ?? {};
-    const title = String(rel.officerTitle ?? "").trim();
-    const role =
-      title ||
-      (Number(rel.isOfficer) === 1 ? "Officer" : "") ||
-      (Number(rel.isDirector) === 1 ? "Director" : "") ||
-      (Number(rel.isTenPercentOwner) === 1 ? "10% Owner" : "") ||
-      "Insider";
-
-    const txns = doc.nonDerivativeTable?.nonDerivativeTransaction ?? [];
-    const trades: Trade[] = [];
-
-    for (const txn of txns) {
-      const shares = Number(txn.transactionAmounts?.transactionShares?.value ?? 0);
-      const price = Number(txn.transactionAmounts?.transactionPricePerShare?.value ?? 0);
-      const adCode = txn.transactionAmounts?.transactionAcquiredDisposedCode?.value ?? "";
-      const tradeDate = String(txn.transactionDate?.value ?? filedDate);
-      if (shares <= 0) continue;
-      trades.push({
-        id: `${adsh}-${trades.length}`,
-        filedDate,
-        tradeDate,
-        company,
-        ticker,
-        insiderName,
-        role,
-        type: adCode === "A" ? "buy" : adCode === "D" ? "sell" : "other",
-        shares,
-        pricePerShare: price,
-        totalValue: shares * price,
-      });
-    }
-    return trades;
-  } catch {
-    return [];
-  }
-}
-
-async function fetchForm4Trades(): Promise<Trade[]> {
-  const filings = await fetchRecentFilings();
-
-  const docResults = await Promise.allSettled(
-    filings.map(async (f) => {
-      const cik = cikFromAdsh(f.adsh);
-      const doc = await getPrimaryDoc(cik, f.adsh);
-      return doc ? { f, cik, doc } : null;
-    })
-  );
-
-  type ResolvedDoc = { f: EdgarFiling; cik: string; doc: string };
-  const validDocs = docResults.flatMap((r): ResolvedDoc[] =>
-    r.status === "fulfilled" && r.value !== null ? [r.value] : []
-  );
-
-  const trades: Trade[] = [];
-  for (const { f, cik, doc } of validDocs) {
-    await new Promise<void>((r) => setTimeout(r, 500));
-    const batch = await parseForm4(cik, f.adsh, doc, f.file_date);
-    trades.push(...batch);
-  }
-
-  return trades.sort((a, b) => b.tradeDate.localeCompare(a.tradeDate));
+async function fetchTrades(): Promise<Trade[]> {
+  const { data, error } = await getSupabase()
+    .from("trades")
+    .select("*")
+    .order("trade_date", { ascending: false })
+    .limit(50);
+  if (error) throw new Error(error.message);
+  return ((data ?? []) as TradeRow[]).map(rowToTrade);
 }
 
 // ── Page ──────────────────────────────────────────────────────────────────────
+
+export const revalidate = 3600;
 
 export default async function Home() {
   let trades: Trade[] = [];
   let error: string | null = null;
 
   try {
-    trades = await fetchForm4Trades();
+    trades = await fetchTrades();
   } catch (e) {
     error = e instanceof Error ? e.message : "Unknown error";
   }
@@ -286,7 +143,7 @@ export default async function Home() {
             </table>
           </div>
         ) : !error ? (
-          <p className="text-gray-500">No trades found.</p>
+          <p className="text-gray-500">No trades yet — check back after the next sync.</p>
         ) : null}
       </div>
     </main>
