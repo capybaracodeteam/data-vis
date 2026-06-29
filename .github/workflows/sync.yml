@@ -1,0 +1,35 @@
+name: Daily EDGAR Sync
+
+on:
+  schedule:
+    - cron: "0 13 * * 1-5"  # 1pm UTC weekdays (EDGAR only processes weekdays)
+  workflow_dispatch:
+    inputs:
+      startdt:
+        description: "Start date (YYYY-MM-DD)"
+        required: false
+      enddt:
+        description: "End date (YYYY-MM-DD)"
+        required: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - run: npm ci
+
+      - name: Run sync
+        run: npx tsx scripts/sync.ts "$STARTDT" "$ENDDT"
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          STARTDT: ${{ inputs.startdt || '' }}
+          ENDDT: ${{ inputs.enddt || '' }}
