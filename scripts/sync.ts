@@ -17,7 +17,7 @@ async function main() {
   if (!startdt || !enddt) {
     const today = new Date();
     enddt = isoDate(new Date(today.getFullYear(), today.getMonth(), today.getDate() - 1));
-    startdt = isoDate(new Date(today.getFullYear(), today.getMonth(), today.getDate() - 3));
+    startdt = isoDate(new Date(today.getFullYear(), today.getMonth(), today.getDate() - 1));
   }
 
   console.log(`Starting sync: ${startdt} → ${enddt}`);

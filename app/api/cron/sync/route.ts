@@ -17,7 +17,7 @@ export async function GET(request: Request) {
     if (!startdt || !enddt) {
       const today = new Date();
       enddt = isoDate(new Date(today.getFullYear(), today.getMonth(), today.getDate() - 1));
-      startdt = isoDate(new Date(today.getFullYear(), today.getMonth(), today.getDate() - 3));
+      startdt = isoDate(new Date(today.getFullYear(), today.getMonth(), today.getDate() - 1));
     }
 
     const upserted = await syncDateRange(startdt, enddt, getSupabase());

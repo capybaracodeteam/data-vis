@@ -2,7 +2,7 @@ name: Daily EDGAR Sync
 
 on:
   schedule:
-    - cron: "0 13 * * 1-5"  # 1pm UTC weekdays (EDGAR only processes weekdays)
+    - cron: "0 13 * * 2-6"  # 1pm UTC Tue–Sat (syncs previous day; Sat covers Fri)
   workflow_dispatch:
     inputs:
       startdt:
