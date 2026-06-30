@@ -1,21 +1,17 @@
 import { getSupabase } from "@/app/lib/supabase";
 import InsiderTradesChart, { type ChartEntry } from "@/app/components/InsiderTradesChart";
 
-function formatDateRange(start: Date, end: Date): string {
-  const fmt = (d: Date) =>
-    d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
-  return `${fmt(start)} – ${fmt(end)}`;
+
+interface PeriodData {
+  buys: { data: ChartEntry[] };
+  sells: { data: ChartEntry[] };
 }
 
-async function fetchChartData(): Promise<{
-  buys: ChartEntry[];
-  sells: ChartEntry[];
-  dateRange: string;
-}> {
+async function fetchPeriodData(days: number): Promise<PeriodData> {
   const end = new Date();
   end.setHours(0, 0, 0, 0);
   const start = new Date(end);
-  start.setDate(start.getDate() - 7);
+  start.setDate(start.getDate() - days);
 
   const cutoff = start.toISOString().slice(0, 10);
 
@@ -44,40 +40,43 @@ async function fetchChartData(): Promise<{
     value,
   }));
 
-  const buys = entries
+  const buys: ChartEntry[] = entries
     .filter((e) => e.value > 0)
     .sort((a, b) => b.value - a.value)
     .slice(0, 5);
 
-  const sells = entries
+  const sells: ChartEntry[] = entries
     .filter((e) => e.value < 0)
-    .sort((a, b) => a.value - b.value) // most negative (largest magnitude) first
+    .sort((a, b) => a.value - b.value)
     .slice(0, 5)
     .map((e) => ({ ticker: e.ticker, value: Math.abs(e.value) }));
 
-  return { buys, sells, dateRange: formatDateRange(start, end) };
+  return {
+    buys: { data: buys },
+    sells: { data: sells },
+  };
 }
 
 export const revalidate = 3600;
 
 export default async function Home() {
-  let buys: ChartEntry[] = [];
-  let sells: ChartEntry[] = [];
-  let dateRange = "";
+  let weekly: PeriodData | null = null;
+  let monthly: PeriodData | null = null;
   let error: string | null = null;
 
   try {
-    ({ buys, sells, dateRange } = await fetchChartData());
+    [weekly, monthly] = await Promise.all([fetchPeriodData(7), fetchPeriodData(30)]);
   } catch (e) {
     error = e instanceof Error ? e.message : "Unknown error";
   }
 
+  const empty = { data: [], dateRange: "" };
+
   return (
     <main className="min-h-screen bg-gray-50 p-6">
       <div className="max-w-4xl mx-auto">
-        <div className="mb-8">
-          <h1 className="text-2xl font-bold text-gray-900">SEC Insider Trades</h1>
-          <p className="text-sm text-gray-500 mt-1">Form 4 filings · updates daily</p>
+        <div className="mb-8 text-center">
+          <h1 className="text-2xl font-bold text-gray-900">Insider Trading</h1>
         </div>
 
         {error ? (
@@ -88,17 +87,17 @@ export default async function Home() {
           <div className="flex flex-col gap-6">
             <div className="rounded-lg border border-gray-200 bg-white p-6">
               <InsiderTradesChart
-                data={buys}
-                dateRange={dateRange}
-                title="Top 5 Net Buys"
+                weekly={weekly?.buys ?? empty}
+                monthly={monthly?.buys ?? empty}
+                title="Largest Buys"
                 mode="buy"
               />
             </div>
             <div className="rounded-lg border border-gray-200 bg-white p-6">
               <InsiderTradesChart
-                data={sells}
-                dateRange={dateRange}
-                title="Top 5 Net Sells"
+                weekly={weekly?.sells ?? empty}
+                monthly={monthly?.sells ?? empty}
+                title="Largest Sells"
                 mode="sell"
               />
             </div>
