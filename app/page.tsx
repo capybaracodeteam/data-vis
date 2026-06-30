@@ -1,7 +1,5 @@
 import { getSupabase } from "@/app/lib/supabase";
 import InsiderTradesChart, { type ChartEntry } from "@/app/components/InsiderTradesChart";
-import SearchBar from "@/app/components/SearchBar";
-
 
 interface PeriodData {
   buys: { data: ChartEntry[] };
@@ -77,8 +75,7 @@ export default async function Home() {
     <main className="min-h-screen bg-gray-50 p-6">
       <div className="max-w-4xl mx-auto">
         <div className="mb-8 text-center">
-          <h1 className="text-2xl font-bold text-gray-900 mb-6">Insider Trading</h1>
-          <SearchBar />
+          <h1 className="text-2xl font-bold text-gray-900">Insider Trading</h1>
         </div>
 
         {error ? (
