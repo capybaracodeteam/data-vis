@@ -29,6 +29,7 @@ interface Form4Owner {
 
 interface Form4Transaction {
   transactionDate?: { value?: string };
+  transactionCoding?: { transactionCode?: string };
   transactionAmounts?: {
     transactionShares?: { value?: number };
     transactionPricePerShare?: { value?: number };
@@ -153,24 +154,39 @@ async function parseForm4(
     const txns = doc.nonDerivativeTable?.nonDerivativeTransaction ?? [];
     const rows: TradeRow[] = [];
 
+    // Only open market purchases (P) and sales (S) reflect deliberate insider conviction.
+    // Awards, grants, option exercises, tax withholding, etc. are excluded.
+    const VALID_CODES = new Set(["P", "S"]);
+    const INVALID_TICKERS = new Set([null, "", "N/A", "NONE"]);
+
     for (const txn of txns) {
+      const txnCode = txn.transactionCoding?.transactionCode ?? "";
+      if (!VALID_CODES.has(txnCode)) continue;
+      if (INVALID_TICKERS.has(ticker)) continue;
+
       const shares = Number(txn.transactionAmounts?.transactionShares?.value ?? 0);
       const price = txn.transactionAmounts?.transactionPricePerShare?.value ?? null;
-      const adCode = txn.transactionAmounts?.transactionAcquiredDisposedCode?.value ?? "";
       const tradeDate = String(txn.transactionDate?.value ?? filedDate);
       if (shares <= 0) continue;
+
+      const rawPrice = price !== null ? Number(price) : null;
+      const rawTotal = rawPrice !== null ? shares * rawPrice : null;
+      // Filers sometimes enter the total transaction value in the price-per-share field.
+      // Any single transaction over $1B is almost certainly a filing error.
+      const badPrice = rawTotal !== null && rawTotal > 1_000_000_000;
+
       rows.push({
         id: `${adsh}-${rows.length}`,
         filed_date: filedDate,
         trade_date: tradeDate,
         company,
-        ticker: ticker || null,
+        ticker,
         insider_name: insiderName,
         role: role || null,
-        type: adCode === "A" ? "buy" : adCode === "D" ? "sell" : "other",
+        type: txnCode === "P" ? "buy" : "sell",
         shares,
-        price_per_share: price !== null ? Number(price) : null,
-        total_value: price !== null ? shares * Number(price) : null,
+        price_per_share: badPrice ? null : rawPrice,
+        total_value: badPrice ? null : rawTotal,
         adsh,
       });
     }
